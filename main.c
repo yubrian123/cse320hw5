@@ -26,6 +26,13 @@ typedef struct processStruct
 	firstLevel firstLevelPT[8];
 }processStruct;
 
+typedef struct cache
+{
+	pthread_t threadID;
+	long virtualAddress;
+	int physicalAddress;
+}cache;
+
 void* threadFunction()
 {
         while(1)
@@ -149,12 +156,113 @@ int cse_320_virt_to_phys(processStruct process, long memAdds)
 	}
 }
 
+void initializeCache(cache caches[])
+{
+	int i;
+	for(i = 0; i < 4; i++)
+	{
+		caches[i].physicalAddress = 0;
+		caches[i].virtualAddress = 0;
+	}
+}
+
+void addToCache(cache caches[], int physicalAddress, long virtualAddress, pthread_t threadID)
+{
+	int i = 0;
+	while(i < 4)
+	{
+		if(caches[i].threadID == 0)
+		{
+			caches[i].threadID = threadID;
+			caches[i].virtualAddress = virtualAddress;
+			caches[i].physicalAddress = physicalAddress;
+			printf("cache miss \n");
+			break;
+		}
+		else if(caches[i].threadID == threadID && caches[i].virtualAddress == virtualAddress && caches[i].physicalAddress == physicalAddress)
+		{
+			printf("cache hit \n");
+			break;
+		}
+		i++;
+	}
+	if(i == 4)
+	{
+		caches[0].threadID = threadID;
+		caches[0].virtualAddress = virtualAddress;
+		caches[0].physicalAddress = physicalAddress;
+		printf("eviction \n");
+	}
+}
+
+int checkCache(cache caches[], long virtualAddress, pthread_t threadID)
+{
+	int i = 0;
+	while(i < 4)
+	{
+		if(caches[i].threadID == 0)
+		{
+			caches[i].threadID = threadID;
+			caches[i].virtualAddress = virtualAddress;
+			printf("cache miss \n");
+			return caches[i].physicalAddress;
+		}
+		else if(caches[i].threadID == threadID && caches[i].virtualAddress == virtualAddress)
+		{
+			printf("cache hit \n");
+			return caches[i].physicalAddress;
+		}
+		i++;
+	}
+	return -1;
+}
+
+void checkWriteCache(cache caches[], int physicalAddress, long virtualAddress, pthread_t threadID)
+{
+	int i = 0;
+	while(i < 4)
+	{
+		if(caches[i].threadID == threadID && caches[i].virtualAddress == virtualAddress)
+		{
+			caches[i].physicalAddress = physicalAddress;
+			printf("cache hit \n");
+			break;
+		}
+		i++;
+	}
+	if(i == 4)
+	{
+		caches[0].threadID = threadID;
+		caches[0].virtualAddress = virtualAddress;
+		caches[0].physicalAddress = physicalAddress;
+		printf("eviction \n");
+	}
+}
+
+void killCache(cache caches[], pthread_t threadID)
+{
+	int i = 0;
+	while(i < 4)
+	{
+		if(caches[i].threadID == threadID)
+		{
+			caches[i].threadID = 0;
+			caches[i].virtualAddress = 0;
+			caches[i].physicalAddress = 0;
+			printf("cache hit \n");
+		}
+		i++;
+	}
+}
+
 int main()
 {
   printf("Please Type in your Command \n");
   char command[255];
   int numOfThreads = 0;
   processStruct processes[4];
+	cache caches[4];
+	initializeCache(caches);
   initialize(processes);
 	int fd;
 	char * myfifo = "/tmp/myfifo";
@@ -250,6 +358,7 @@ int main()
 	        long find = atol(args[0]);
 					int findCancelCounter = 0;
 					int canceled = 0;
+					killCache(caches, find);
 					while(findCancelCounter < 4)
 					{
 						if(processes[findCancelCounter].threadID == find)
@@ -378,44 +487,53 @@ int main()
 				int readMemCounter = 0;
 				int mem = 0;
 				int readCounter;
-				while(readMemCounter < 4)
+				int check = checkCache(caches, findAdd, findMem);
+				if(check > -1)
 				{
-					if(processes[readMemCounter].threadID == findMem)
-					{
-						readCounter = cse_320_virt_to_phys(processes[readMemCounter], findAdd);
-						if(readCounter == -1)
-						{
-							printf("Virtual Address not in use \n");
-							exit (0);
-						}
-						fd = open(myfifo, O_WRONLY);
-						int pipe[1] = {readCounter};
-						write(fd, "read", strlen("read")+1);
-						write(fd, pipe, sizeof(int));
-						close(fd);
-						fd = open(myfifo, O_RDONLY);
-						int messageBack[1];
-						read(fd, messageBack, sizeof(int));
-						close(fd);
-						if(messageBack[0] == -1)
-						{
-							printf("error, address out of range");
-							exit(0);
-						}
-						if(messageBack[0] == -2)
-						{
-							printf("error, address is not aligned");
-							exit(0);
-						}
-						printf("%d \n", messageBack[0]);
-						mem++;
-					}
-					readMemCounter++;
+					printf("%d \n", check);
 				}
-				if(mem == 0)
+				else 
 				{
-					printf("Process Address Not found \n");
-					exit (0);
+					while(readMemCounter < 4)
+					{
+						if(processes[readMemCounter].threadID == findMem)
+						{
+							readCounter = cse_320_virt_to_phys(processes[readMemCounter], findAdd);
+							if(readCounter == -1)
+							{
+								printf("Virtual Address not in use \n");
+								exit (0);
+							}
+							fd = open(myfifo, O_WRONLY);
+							int pipe[1] = {readCounter};
+							write(fd, "read", strlen("read")+1);
+							write(fd, pipe, sizeof(int));
+							close(fd);
+							fd = open(myfifo, O_RDONLY);
+							int messageBack[1];
+							read(fd, messageBack, sizeof(int));
+							close(fd);
+							addToCache(caches, messageBack[0], findMem, findAdd);
+							if(messageBack[0] == -1)
+							{
+								printf("error, address out of range");
+								exit(0);
+							}
+							if(messageBack[0] == -2)
+							{
+								printf("error, address is not aligned");
+								exit(0);
+							}
+							printf("%d \n", messageBack[0]);
+							mem++;
+						}
+						readMemCounter++;
+					}
+					if(mem == 0)
+					{
+						printf("Process Address Not found \n");
+						exit (0);
+					}
 				}
 			}
 			else if(strcmp(command, "write") == 0)
@@ -455,6 +573,7 @@ int main()
 				int writeMemCounter = 0;
 				int memWrite = 0;
 				int writeCounter = 0;
+				checkWriteCache(caches, newPhysical, writeAdd, writeMem);
 				while(writeMemCounter < 4)
 				{
 					if(processes[writeMemCounter].threadID == writeMem)
